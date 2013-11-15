@@ -9,7 +9,7 @@ selected distributional assumptions for the cost and effectiveness variables (an
 the selection model) 
 }
 \usage{
-writeModel(dist.c, dist.e, dist.d)
+writeModel(dist.c, dist.e, dist.d, model.file)
 }
 \arguments{
   \item{dist.c}{
@@ -22,12 +22,15 @@ Available options are Beta ("beta"), Gamma ("gamma"), Bernoulli ("bern") and Nor
 ("norm")
 }
   \item{dist.d}{
-A text string defining the selection model. Possible choices are "cov" (used when 
-individual covariates are available and can be used to estimate the probability of 
-zero costs) and "int" (when no covariate is available and an intercept-only model is 
-fitted). The function writes a text file "model.txt" in the current working directory, 
-including the relevant bits of code, that can be then passed to the call to the 
-function jags to run the MCMC simulations in background 
+A text string defining the selection model. Possible choices are "cov.cauchy" or 
+"cov.norm" (used when individual covariates are available and can be used to estimate 
+the probability of zero costs) and "int" (when no covariate is available and an 
+intercept-only model is fitted). The function writes a text file in the current 
+working directory, including the relevant bits of code, that can be then passed to 
+the call to the function jags to run the MCMC simulations in background 
+}
+  \item{model.file}{
+A string with the name of the model file to which the JAGS code is saved
 }
 }
 \value{

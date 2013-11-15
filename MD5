@@ -1,10 +1,10 @@
-6aa7211d51b09c660387a1111fc834e2 *DESCRIPTION
+24deac640e5e9e8e37b243819241f1b6 *DESCRIPTION
 8b54e5a89fbda3af5e077053d40bec76 *NAMESPACE
-6ae927f64f10014d86e5b81a5e06a8fb *R/bces0.R
+63957909209b806593c75af529f773c2 *R/bces0.R
 b4588690efe028510321a0d77386b454 *data/acupuncture.RData
-ab36f211084f3b7431258f600f52eb1e *man/BCEs0-package.Rd
-335762ccf93915270ddf03b93c31cce2 *man/bces0.Rd
+fab1d7ba3a9129dabc4eb16946a87584 *man/BCEs0-package.Rd
+0e6fe701726a715b37f44c5901d786f6 *man/bces0.Rd
 8717b462042ee06b2854fdb693a28a9f *man/data.Rd
 3e445863aad788ff759c0358bcc0ae4b *man/plot.bces0.Rd
 2e90ff6c658d0d8c669a6397a44a5f5c *man/print.bces0.Rd
-f838dbb5c95826df3f16cd440757be23 *man/writeModel.Rd
+afef5ace1e25d25bc162dfa8d92bbc8f *man/writeModel.Rd

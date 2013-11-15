@@ -1,36 +1,53 @@
 ### Defines the class
 bces0 <- function(data,dist.c=c("gamma","logn","norm"),dist.e=c("beta","gamma","bern","norm"),
-	n.iter=10000,n.burnin=5000,n.chains=2) UseMethod("bces0")
+w=1e-6,W=1e-6,n.iter=10000,n.burnin=5000,n.chains=2,robust=TRUE,model.file="model.txt") UseMethod("bces0")
 
-### Calls to the actual function
+### Call to the actual function
 bces0.default <- function(data,dist.c=c("gamma","logn","norm"),dist.e=c("beta","gamma","bern","norm"),
-	n.iter=10000,n.burnin=5000,n.chains=2) {
+w=1e-6,W=1e-6,n.iter=10000,n.burnin=5000,n.chains=2,robust=TRUE,model.file="model.txt") {
 
 # BCES0 - Bayesian cost-effectiveness analysis in the presence of structural zero costs
-# Based on Baio (2013). Bayesian models for cost-effectiveness analysis in the presence of structural zeros.
+# Based on Baio (2013). Bayesian models for cost-effectiveness analysis in the presence 
+# of structural zeros.
+#
+# data is a named list including values for the following variables:
+#  e0,e1:	measure of effectiveness for intervention t=0,1, respectively
+#  c0,c1:	costs for intervention t=0,1, respectively
+#  X0,X1:	design matrices to estimate the selection model for t=0,1, respectively
+#               BCES0 checks that these are centered, and if not does it
+#               NB: if X0 and X1 are null (no covariates), assumes a random effect model to
+#                   estimate the individual probability of having zero costs
+#  H.psi,H.zeta: a vector of fixed hyperparameters for the prior in the positive cost groups.
+#                If only one value is passed as argument, then BCEs0 assumes that this is to
+#                be used for both treatments being considered
 #
 # The package implements the following models
-# for costs: Gamma and Log-Normal - these are quite general and probably good enough 
+# for costs:    Gamma, Log-Normal - these are quite general and probably good enough 
 #               to describe most real-life situations.
 #               Also considers a Normal model (generally not good, but possibly useful 
 #               for transformed data
+#
 # for benefits: Beta (good to describe QALYs in a 1-year horizon)
 #               Gamma (good to describe QALYs in a longer horizon)
 #               Bernoulli (good to describe hard measures, such as death)
 #               Normal (probably not too generalisable, but could be used for continuous scales)
-# for the selection model: if covariates are observed, then runs a simple logistic regression
+#
+# for the pattern model: if covariates are observed, then runs a simple logistic regression
 #               to estimate the probability of observing zero costs. If no covariates are passed
 #               as data, then only uses the intercept (marginal probability, assuming no confounders)
 #
-# data is a named list including values for the following variables:
-# e0,e1,	# measure of effectiveness for intervention t=0,1, respectively
-# c0,c1,	# costs for intervention t=0,1, respectively
-# X0,X1,	# design matrices to estimate the selection model for t=0,1, respectively
-#               # BCES0 checks that these are centered, and if not does it
-#               # NB: if X0 and X1 are null (no covariates), assumes a random effect model to
-#               #     estimate the individual probability of having zero costs
-# H.psi,H.zeta	# fixed hyperparameters for the prior in the positive cost groups
-
+# w,W           parameters to characterise the degenerate distribution for the structural zeros.
+#               w is the mean and W is the standard deviation *on the natural scale* for this 
+#               distribution. Default values are w=W=1e-6 (0.000001), which imply effectively a
+#               mean of 0 and no variability
+#
+# robust        if TRUE (default) then implements a Cauchy prior for the pattern model coefficients
+#               if FALSE, then implements a vague Normal prior
+#
+# model.file    string text with the name of the file to which the JAGS model code is saved. The
+#               default is "model.txt", but the user can choose a different string
+#
+# version 6 November 2013
 
 ## 0. Sets up the required path and libraries
 require(R2jags)
@@ -38,44 +55,68 @@ working.dir <- getwd()
 # checks that some covariates are available for the selection model
 chk <- is.null(data$X0) & is.null(data$X1)
 if (chk==TRUE) {		# if not:
-	J <- 1			#  sets the number of covariates to 1 (only the intercept)
-	dist.d <- "int"		#  then uses only the intercept
+	dist.d <- "int"	#  then uses only the intercept (Cauchy prior)
 } else {			# alternatively:
-	dist.d <- "cov"		#  uses a regression model with the observed covariates
+	if (robust==TRUE) {
+		dist.d <- "cov.cauchy"	# regression model with the covariates (Cauchy prior)
+	}
+	if (robust==FALSE) {
+		dist.d <- "cov.norm"	# regression model with the covariates (Normal prior)
+	}
 }
 
 ## Now runs JAGS with the required model
-# 1. writes the model code to a file using the function "writeModel". This selects the required modules 
-#    and then assign the name of the file to the variable "filein"
-writeModel(dist.c,dist.e,dist.d)
-filein <- "model.txt"
+# 1. writes the model code to a file using the function "writeModel". This selects the 
+#    required modules and then assign the name of the file to the variable "filein"
+writeModel(dist.c,dist.e,dist.d,model.file)
+filein <- model.file
 
 # 2. Creates variables & check that all works out OK
 d0 <- ifelse(data$c0==0,1,0)		# indicator of null cost for t=0
 d1 <- ifelse(data$c1==0,1,0)		# indicator of null cost for t=1
-n0 <- length(d0)			# sample size for t=0
-n1 <- length(d1)			# sample size for t=1
+n0 <- length(d0)			     # sample size for t=0
+n1 <- length(d1)			     # sample size for t=1
 
-# Defines the data list; this works if there are no covariates (sets 
+# Creates copies of the cost variables to be used in the marginal model. For computational
+# reasons, recodes zeros to a small, strictly positive value. But this has NO IMPACT
+# whatsoever on the estimation of the costs, since the prior is extremely informative 
+# (and places all the mass on 0), so that the posterior is basically not affected from 
+# the observed data, for the subjects with observed null costs
+c0.star <- data$c0; c0.star[d0==1] <- .0000001
+c1.star <- data$c1; c1.star[d1==1] <- .0000001
+
+# Defines the data list; this works directly if there are no covariates (sets 
 # parameters for Cauchy priors on the intercepts of the selection model)
-dataJags <- list(n0=n0,n1=n1,d0=d0,d1=d1,J=J,m.beta0=0,Q.beta0=2.5,m.beta1=0,
-		  Q.beta1=2.5,c0=data$c0,c1=data$c1,e0=data$e0,e1=data$e1,
-		  H.psi=data$H.psi,H.zeta=data$H.zeta)
+dataJags <- list(n0=n0,n1=n1,d0=d0,d1=d1,m.beta0=0,Q.beta0=2.5^-2,m.beta1=0,
+		  Q.beta1=2.5^-2,c0=data$c0,c1=data$c1,e0=data$e0,e1=data$e1,
+		  H.psi=data$H.psi,H.zeta=data$H.zeta,w=w,W=W,c0.star=c0.star,c1.star=c1.star)
 
-# Do this only if there are some covariates
+# If only one value is passed for H.psi, H.zeta, then uses that value for both treatments
+if (length(data$H.psi)==1) {
+	dataJags$H.psi <- rep(data$H.psi,2)
+}
+if (length(data$H.zeta)==1) {
+	dataJags$H.zeta <- rep(data$H.psi,2)
+}
+
+# Specifies the number of covariates (in the intercept-only case, ie 1)
+if (chk==TRUE) {dataJags$J <- 1}		# needs to specify the number of covariates
+						          # if none, then J=1 (only the intercept)
+
+# Do this only if there are some "true" covariates (in addition to the intercept)
 if (chk==FALSE) {
-# first checks that the design matrices have a column of 0 (for the intercept)
+# first checks that the design matrices have a column of 1s (for the intercept)
 	if (any(data$X0[,1]!=1)==TRUE) {
 		data$X0 <- cbind(rep(1,dim(data$X0)[1]),data$X0)	# if not, adds it
 	} 
 	if (any(data$X1[,1]!=1)==TRUE) {
 		data$X1 <- cbind(rep(1,dim(data$X1)[1]),data$X1)	# if not, adds it
 	}
-# sets the number of covariates in the selection model (including the intercept)
+# sets the number of covariates in the pattern model (including the intercept)
 	J <- dim(data$X0)[2]
 
 # then checks that the covariates are centered and if not does it
-	threshold <- 1e-12	# if a number is within this threshold to 0 then it is effectively 0
+	threshold <- 1e-12	# if within this threshold to 0 then effectively 0
 	Z0 <- data$X0; Z1 <- data$X1
 	for (j in 2:J) {
 		if (mean(data$X0[,j])>threshold) {
@@ -86,37 +127,20 @@ if (chk==FALSE) {
 		}
 	}
 
-# finally modifies the data list to include the covariates as well
+# Finally modifies the data list to include the covariates as well
+	dataJags$J <- J
 	dataJags$Z0 <- Z0
 	dataJags$Z1 <- Z1
-	dataJags$m.beta0 <- rep(0,J)
-	dataJags$m.beta1 <- rep(0,J)
-	dataJags$Q.beta0 <- .00001*diag(J)
-	dataJags$Q.beta1 <- .00001*diag(J)
+	if (robust==FALSE) {
+		dataJags$m.beta0 <- rep(0,J)		# m.beta0=Normal mean vector
+		dataJags$m.beta1 <- rep(0,J)		# m.beta1=Normal mean vector
+		dataJags$Q.beta0 <- .00001*diag(J)	# Q.beta0=Normal precision matrix
+		dataJags$Q.beta1 <- .00001*diag(J)	# Q.beta1=Normal precision matrix
+	}
 }
 
-# Adds elements to the data list, depending on the marginal model for the cost that has been selected
-if (dist.c=="gamma") {
-	dataJags$w <- 1			# parameter of the null distribution for costs
-	dataJags$W <- 10000		# parameter of the null distribution for costs
-}
-if (dist.c=="logn") {
-	# For the log-Normal model needs to define auxiliary variables that are the same as c0 & c1
-	# but do not have observed zeros (this does not impact on the model as it is only used in the
-	# sub-group where the cost is forced to be 0 anyway
-	c0.star <- data$c0; 	c0.star[d0==1] <- .00001	
-	c1.star <- data$c1;	c1.star[d1==1] <- .00001
-	dataJags$c0.star=c0.star
-	dataJags$c1.star=c1.star
-	dataJags$w <- 1			# parameter of the null distribution for costs
-	dataJags$W <- 50		# parameter of the null distribution for costs
-}
-if (dist.c=="norm") {
-	dataJags$w <- 0			# parameter of the null distribution for costs
-	dataJags$W <- 0.0000000001	# parameter of the null distribution for costs
-}
 
-# 4. Defines the parameters vector
+# 3. Defines the parameters vector
 params <- c("p","mu.c","mu.e","eta0[1]","lambda0[1]","eta1[1]","lambda1[1]",
 	"beta0","beta1","gamma0","gamma1","psi0","psi1")
 # the parameters tau0,tau1 are only relevant if benefits are not modelled as Bernoulli
@@ -124,27 +148,27 @@ if (dist.e!="bern") {
 	params <- c(params,c("tau0","tau1"))
 }
 
-# 5. Defines the initial values for the random nodes in the model
+# 4. Defines the initial values for the random nodes in the model
 #    NB This is a general structure that works for all the model implemented
 list.temp <- list(
-	beta0=rnorm(J,0,1),beta1=rnorm(J,0,1),psi0=c(runif(1),NA),psi1=c(runif(1),NA),
-	zeta0=c(runif(1),NA),zeta1=c(runif(1),NA),log.tau0=runif(1),xi0=runif(1),
-	log.tau1=runif(1),xi1=runif(1)
+	beta0=rnorm(dataJags$J,0,1),beta1=rnorm(dataJags$J,0,1),psi0=c(runif(1),NA),
+	psi1=c(runif(1),NA),zeta0=c(runif(1),NA),zeta1=c(runif(1),NA),log.tau0=runif(1),
+	xi0=runif(1),log.tau1=runif(1),xi1=runif(1)
 )
 inits <- function(){
 	list.temp
 }
 
-# 6. Runs JAGS to produce the posterior distributions
-n.iter <- n.iter				# number of iterations
+# 5. Runs JAGS to produce the posterior distributions
+n.iter <- n.iter				     # number of iterations
 n.burnin <- n.burnin				# number of burn-in
-n.thin <- floor((n.iter-n.burnin)/500)		# number of thinning so that 1000 iterations are stored
+n.thin <- floor((n.iter-n.burnin)/500)	# thinning so that 1000 iterations are stored
 n.chains <- n.chains				# number of Markov chains
-mod <- jags(dataJags, inits, params, model.file="model.txt",
+mod <- jags(dataJags, inits, params, model.file=model.file,
 	n.chains=n.chains, n.iter, n.burnin, n.thin,
 	DIC=TRUE, working.directory=working.dir, progress.bar="text")
 
-# 7. Defines the output of the function
+# 6. Defines the output of the function
 out <- list(mod=mod,params=params,dataJags=dataJags,inits=inits)
 class(out) <- "bces0"
 out
@@ -240,25 +264,25 @@ if (mdl$n.chains>=2) {
 
 
 #####
-writeModel <- function(dist.c,dist.e,dist.d) {
+writeModel <- function(dist.c,dist.e,dist.d,model.file) {
 ## Selects the modules in the model code, according to the distributional assumptions
 
 ## 1. Selection model
-##  a. Standard regression as a function of the observed covariates X0,X1
-sel.mod.cov <- "
+##  a. Standard regression as a function of the observed covariates X0,X1 (Normal prior)
+sel.mod.cov.norm <- "
 model {
-# 1. Selection model for c=0
+# 1. Pattern model for c=0 (Normal prior)
     # a. Intervention t=0
     for (i in 1:n0) {
         d0[i] ~ dbern(pi0.hat[i])
-        pi0.hat[i] <- max (.00001,min(.99999,pi0[i]))
+        pi0.hat[i] <- max(.00001,min(.99999,pi0[i]))
         logit(pi0[i]) <- Z0[i,]%*%beta0
     }
 
     # b. Intervention t=1
     for (i in 1:n1) {
         d1[i] ~ dbern(pi1.hat[i])
-        pi1.hat[i] <- max (.00001,min(.99999,pi1[i]))
+        pi1.hat[i] <- max(.00001,min(.99999,pi1[i]))
         logit(pi1[i]) <- Z1[i,]%*%beta1
     }
 
@@ -273,14 +297,47 @@ model {
 
 "
 
-##  b. Intercept-only model (when no covariates are available)
-sel.mod.int <- "
+##  b. Standard regression as a function of the observed covariates X0,X1 (Cauchy prior)
+sel.mod.cov.cauchy <- "
 model {
-# 1. Selection model for c=0
+# 1. Pattern model for c=0 (Cauchy prior)
     # a. Intervention t=0
     for (i in 1:n0) {
         d0[i] ~ dbern(pi0.hat[i])
-        pi0.hat[i] <- max (.00001,min(.99999,pi0[i]))
+        pi0.hat[i] <- max(.00001,min(.99999,pi0[i]))
+        logit(pi0[i]) <- Z0[i,]%*%beta0
+    }
+
+    # b. Intervention t=1
+    for (i in 1:n1) {
+        d1[i] ~ dbern(pi1.hat[i])
+        pi1.hat[i] <- max(.00001,min(.99999,pi1[i]))
+        logit(pi1[i]) <- Z1[i,]%*%beta1
+    }
+
+    # c. Priors on the regression coefficients
+    for (j in 1:J) {
+        beta0[j] ~ dt(m.beta0,Q.beta0,1)
+        beta1[j] ~ dt(m.beta1,Q.beta1,1)
+    }
+#    beta0[1:J] ~ dmt(m.beta0[],Q.beta0[,],1)
+#    beta1[1:J] ~ dmt(m.beta1[],Q.beta1[,],1)
+
+    # d. Average probability of zero cost
+    p[1] <- exp(beta0[1])/(1+exp(beta0[1]))   # intervention t=0
+    p[2] <- exp(beta1[1])/(1+exp(beta1[1]))   # intervention t=1
+
+
+"
+
+##  c. Intercept-only model (when no covariates are available)
+sel.mod.int <- "
+model {
+# 1. Pattern model for c=0 (intercept-only, Cauchy priors)
+    # a. Intervention t=0
+    for (i in 1:n0) {
+        d0[i] ~ dbern(pi0.hat[i])
+        pi0.hat[i] <- max(.00001,min(.99999,pi0[i]))
         logit(pi0[i]) <- beta0  #u0[i]	
 #        u0[i] ~ dnorm(beta0,tau.u0)      # individual random effect
     }
@@ -288,18 +345,14 @@ model {
     # b. Intervention t=1
     for (i in 1:n1) {
         d1[i] ~ dbern(pi1.hat[i])
-        pi1.hat[i] <- max (.00001,min(.99999,pi1[i]))
-        logit(pi1[i]) <- beta1  #u1[i]  
-#        u1[i] ~ dnorm(beta1,tau.u1)      # individual random effect
+        pi1.hat[i] <- max(.00001,min(.99999,pi1[i]))
+        logit(pi1[i]) <- beta1  
     }
 
     # c. Priors on the regression coefficients 
     #   NB: uses a Cauchy(0,2.5) distribution to stabilise the intercept
-    beta0[J] ~ dt(m.beta0,Q.beta0,1) #dnorm(m.beta0,Q.beta0)
-    beta1[J] ~ dt(m.beta1,Q.beta1,1) #dnorm(m.beta1,Q.beta1)
-    # Uniform prior on the standard deviation scale
-#    tau.u0 <- pow(sd.u0,-2);     tau.u1 <- pow(sd.u1,-2)
-#    sd.u0 ~ dunif(0,10);        sd.u1 ~ dunif(0,10)
+    beta0[J] ~ dt(m.beta0,Q.beta0,1)
+    beta1[J] ~ dt(m.beta1,Q.beta1,1)
 
     # d. Average probability of zero cost
     p[1] <- exp(beta0[1])/(1+exp(beta0[1]))   # intervention t=0
@@ -315,29 +368,29 @@ marg.cost.gamma <- "
 # 2. Marginal model for the costs
     # a. Intervention t=0
     for (i in 1:n0) {
-        c0[i] ~ dgamma(eta0[(d0[i]+1)],lambda0[(d0[i]+1)])
+        c0.star[i] ~ dgamma(eta0[(d0[i]+1)],lambda0[(d0[i]+1)])
     }
     # Defines the shape parameters for the two components of the mixture
-    # i. positive costs (d0=0)
-    eta0[1] <- psi0[1]*lambda0[1];  lambda0[1] <- psi0[1]/pow(zeta0[1],2)
-    # ii. null costs (d0=1)
-    eta0[2] <- w;                   lambda0[2] <- W
+    for (s in 1:2) {
+        eta0[s] <- psi0[s]*lambda0[s]
+        lambda0[s] <- psi0[s]/pow(zeta0[s],2)
+    }
 
    # b. Intervention t=1
     for (i in 1:n1) {
-        c1[i] ~ dgamma(eta1[(d1[i]+1)],lambda1[(d1[i]+1)])
+        c1.star[i] ~ dgamma(eta1[(d1[i]+1)],lambda1[(d1[i]+1)])
     }
     # Defines the shape parameters for the two components of the mixture
-    # i. positive costs (d1=0)
-    eta1[1] <- psi1[1]*lambda1[1];  lambda1[1] <- psi1[1]/pow(zeta1[1],2)
-    # ii. null costs (d1=1)
-    eta1[2] <- w;                   lambda1[2] <- W
+    for (s in 1:2) {
+        eta1[s] <- psi1[s]*lambda1[s]
+        lambda1[s] <- psi1[s]/pow(zeta1[s],2)
+    }
 
     # Priors on the natural scale parameters 
-    psi0[1] ~ dunif(0,H.psi);           zeta0[1] ~ dunif(0,H.zeta)
-    psi0[2] <- eta0[2]/lambda0[2];      zeta0[2] <- pow(eta0[2]/pow(lambda0[2],2),-2)
-    psi1[1] ~ dunif(0,H.psi);           zeta1[1] ~ dunif(0,H.zeta)
-    psi1[2] <- eta1[2]/lambda1[2];      zeta1[2] <- pow(eta1[2]/pow(lambda1[2],2),-2)
+    psi0[1] ~ dunif(0,H.psi[1]);        zeta0[1] ~ dunif(0,H.zeta[1])
+    psi0[2] <- w;                       zeta0[2] <- W
+    psi1[1] ~ dunif(0,H.psi[2]);        zeta1[1] ~ dunif(0,H.zeta[2])
+    psi1[2] <- w;                       zeta1[2] <- W
 
     # Weights the cost components by the probability of null costs
     mu.c[1] <- p[1]*psi0[2] + (1-p[1])*psi0[1]
@@ -354,42 +407,32 @@ marg.cost.logn <- "
         c0.star[i] ~ dlnorm(eta0[(d0[i]+1)],inv.lambda0[(d0[i]+1)])
     }
     # Defines the mean and variance on the log-cost scale for the two components of the mixture
-    # i. positive costs (d0=0)
-    eta0[1] <- log(psi0[1])-.5*log(1+pow(zeta0[1]/psi0[1],2))	
-    lambda0[1] <- pow(log(1+pow(zeta0[1]/psi0[1],2)),.5)
-    # ii. null costs (d0=0)
-    eta0[2] <- -W
-    lambda0[2] <- w
-    # iii. defines the precisions for both the components of the mixture
     for (s in 1:2) {
-        inv.lambda0[s] <- pow(lambda0[s],-2) 
-    }    
+        eta0[s] <- log(psi0[s])-.5*log(1+pow(zeta0[s]/psi0[s],2))
+        lambda0[s] <- pow(log(1+pow(zeta0[s]/psi0[s],2)),.5)
+        inv.lambda0[s] <- pow(lambda0[s],-2)
+    }
 
     # b. Intervention t=1
     for (i in 1:n1) {
         c1.star[i] ~ dlnorm(eta1[(d1[i]+1)],inv.lambda1[(d1[i]+1)])
     }
     # Defines the mean and variance on the log-cost scale for the two components of the mixture
-    # i. positive costs (d1=0)
-    eta1[1] <- log(psi1[1])-.5*log(1+pow(zeta1[1]/psi1[1],2))	
-    lambda1[1] <- pow(log(1+pow(zeta1[1]/psi1[1],2)),.5)
-    # ii. null costs (d1=0)
-    eta1[2] <- -W
-    lambda1[2] <- w
-    # iii. defines the precisions for both the components of the mixture
     for (s in 1:2) {
-        inv.lambda1[s] <- pow(lambda1[s],-2) 
+        eta1[s] <- log(psi1[s])-.5*log(1+pow(zeta1[s]/psi1[s],2))
+        lambda1[s] <- pow(log(1+pow(zeta1[s]/psi1[s],2)),.5)
+        inv.lambda1[s] <- pow(lambda1[s],-2)
     }
 
     # Priors on the natural scale parameters
-    psi0[1] ~ dunif(0,H.psi) 
-    zeta0[1] ~ dunif(0,H.zeta)
-    psi0[2] <- exp(eta1[2]+pow(inv.lambda0[2],-1)/2)	
-    zeta0[2] <- pow(exp(pow(inv.lambda0[2],-1)-1)*exp(2*eta0[2]+pow(inv.lambda0[2],-1)),.5)
-    psi1[1] ~ dunif(0,H.psi)
-    zeta1[1] ~ dunif(0,H.zeta)
-    psi1[2] <- exp(eta1[2]+pow(inv.lambda1[2],-1)/2)	
-    zeta1[2] <- pow(exp(pow(inv.lambda1[2],-1)-1)*exp(2*eta1[2]+pow(inv.lambda1[2],-1)),.5)
+    psi0[1] ~ dunif(0,H.psi[1]) 
+    zeta0[1] ~ dunif(0,H.zeta[1])
+    psi0[2] <- w	
+    zeta0[2] <- W
+    psi1[1] ~ dunif(0,H.psi[2])
+    zeta1[1] ~ dunif(0,H.zeta[2])
+    psi1[2] <- w	
+    zeta1[2] <- W
 
     # Weights the average by the probability of null costs
     mu.c[1] <- p[1]*psi0[2] + (1-p[1])*psi0[1]
@@ -403,44 +446,36 @@ marg.cost.norm <- "
     # a. Intervention t=0
     for (i in 1:n0) {
         c0[i] ~ dnorm(eta0[(d0[i]+1)],inv.lambda0[(d0[i]+1)])
+        c0.star[i] ~ dnorm(0,0.00001)   # for consistency only --- not used!
     }
     # Defines the mean and variance on the log-cost scale for the two components of the mixture
-    # i. positive costs (d0=0)
-    eta0[1] <- psi0[1]
-    lambda0[1] <- zeta0[1]
-    # ii. null costs (d0=0)
-    eta0[2] <- w
-    lambda0[2] <- W
-    # iii. defines the precisions for both the components of the mixture
     for (s in 1:2) {
+        eta0[s] <- psi0[s]
+        lambda0[s] <- zeta0[s]
         inv.lambda0[s] <- pow(lambda0[s],-2) 
-    }    
+    } 
 
     # b. Intervention t=1
     for (i in 1:n1) {
         c1[i] ~ dnorm(eta1[(d1[i]+1)],inv.lambda1[(d1[i]+1)])
+        c1.star[i] ~ dnorm(0,0.00001)   # for consistency only --- not used!
     }
     # Defines the mean and variance on the log-cost scale for the two components of the mixture
-    # i. positive costs (d1=0)
-    eta1[1] <- psi1[1]
-    lambda1[1] <- zeta1[1]
-    # ii. null costs (d1=0)
-    eta1[2] <- w
-    lambda1[2] <- W
-    # iii. defines the precisions for both the components of the mixture
     for (s in 1:2) {
+        eta1[s] <- psi1[s]
+        lambda1[s] <- zeta1[s]
         inv.lambda1[s] <- pow(lambda1[s],-2) 
-    }
+    } 
 
     # Priors on the natural scale parameters
-    psi0[1] ~ dunif(0,H.psi) 
-    zeta0[1] ~ dunif(0,H.zeta)
-    psi0[2] <- eta0[2]	
-    zeta0[2] <- lambda0[2]
-    psi1[1] ~ dunif(0,H.psi)
-    zeta1[1] ~ dunif(0,H.zeta)
-    psi1[2] <- eta1[2]
-    zeta1[2] <- lambda1[2]
+    psi0[1] ~ dunif(0,H.psi[1]) 
+    zeta0[1] ~ dunif(0,H.zeta[1])
+    psi0[2] <- w
+    zeta0[2] <- W
+    psi1[1] ~ dunif(0,H.psi[2])
+    zeta1[1] ~ dunif(0,H.zeta[2])
+    psi1[2] <- w
+    zeta1[2] <- W
 
     # Weights the average by the probability of null costs
     mu.c[1] <- p[1]*psi0[2] + (1-p[1])*psi0[1]
@@ -563,10 +598,11 @@ cond.eff.bern <- "
 
 
 ## Combines the required modules in a single model code
-mod.sel <- c("cov","int")
+mod.sel <- c("cov.cauchy","cov.norm","int")
 mod.cost <- c("gamma","logn","norm")
 mod.eff <- c("beta","norm","gamma","bern")
-lab.sel <- c("Model with covariates","Model with intercept only")
+lab.sel <- c("Model with covariates (Cauchy prior)","Model with covariates (Normal prior)",
+	"Model with intercept only")
 lab.cost <- c("Gamma","Log-Normal","Normal")
 lab.eff <- c("Beta","Normal","Gamma","Bernoulli")
 model <- NULL	# avoids a NOTE when checking the package
@@ -581,11 +617,11 @@ for (ms in 1:length(mod.sel)) {
 	       cmd <- paste0("model <- paste(",txt,")")
 	       eval(parse(text=cmd))
             }
-	}
-    }
+          }
+     }
 }
 
-filein <- "model.txt"
+filein <- model.file
 writeLines(model,con=filein)
 }
 
