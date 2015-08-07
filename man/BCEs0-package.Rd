@@ -16,8 +16,8 @@ and Normal models for the measure of clinical effectiveness.
 \tabular{ll}{
 Package: \tab BCEs0\cr
 Type: \tab Package\cr
-Version: \tab 1.1\cr
-Date: \tab 2013-11-15\cr
+Version: \tab 1.1-1\cr
+Date: \tab 2015-08-07\cr
 License: \tab GPL (>=2)\cr
 LazyLoad: \tab yes\cr
 }

@@ -1,1 +1,8 @@
 exportPattern("^[[:alpha:]]+")
+S3method(plot, bces0)
+S3method(print, bces0)
+S3method(bces0, default)
+importFrom(grDevices, colors)
+importFrom(graphics, par, plot, points)
+importFrom(stats, rnorm, runif)
+importFrom(utils, install.packages, installed.packages)
